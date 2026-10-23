@@ -134,8 +134,11 @@ const pluginSources = {
     },
 
     async load(plugin, pluginApi) {
-      const manifest = await pacote.manifest(plugin);
-      const packageName = manifest.name;
+      // Scoped package names (e.g. @org/pkg) are already installed by
+      // install() — skip pacote.manifest() which ignores .npmrc scoped
+      // registries and resolves against registry.npmjs.org instead.
+      const isScopedPackage = plugin.startsWith("@");
+      const packageName = isScopedPackage ? plugin : (await pacote.manifest(plugin)).name;
       const pluginFn = require(packageName);
       if (typeof pluginFn !== "function") {
         throw new PluginInstallationError(`Plugin '${plugin}' is not a valid plugin`);
