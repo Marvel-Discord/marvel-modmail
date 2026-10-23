@@ -12,13 +12,6 @@ services:
     environment:
       NODE_ENV: production
       GITHUB_TOKEN: ${GITHUB_TOKEN}
-    command: >
-      sh -lc '
-        if [ -n "$GITHUB_TOKEN" ]; then
-          printf "//api.github.com/:_authToken=%s\n" "$GITHUB_TOKEN" > /root/.npmrc;
-        fi;
-        npm start
-      '
     networks:
       - modmail-net
 
