@@ -10,4 +10,4 @@ RUN npm ci
 
 COPY . .
 
-CMD ["npm", "start"]
+CMD ["sh", "-c", "if [ -n \"$GITHUB_TOKEN\" ]; then printf '//api.github.com/:_authToken=%s\n' \"$GITHUB_TOKEN\" > /root/.npmrc && chmod 600 /root/.npmrc; fi; exec npm start"]
