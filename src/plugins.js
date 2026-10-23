@@ -72,7 +72,8 @@ function loadPluginNameCache() {
 
 function savePluginNameCache(cache) {
   try {
-    fs.writeFileSync(pluginNameCacheFile, JSON.stringify(cache, null, 2));
+    fs.writeFileSync(pluginNameCacheFile + ".tmp", JSON.stringify(cache, null, 2));
+    fs.renameSync(pluginNameCacheFile + ".tmp", pluginNameCacheFile);
   } catch (err) {
     console.warn(`[WARN] Failed to write plugin name cache (${pluginNameCacheFile}): ${err.message}`);
   }
@@ -166,7 +167,7 @@ const pluginSources = {
 
           console.log(`Installing ${missingPlugins.length} npm plugin(s)...`);
 
-          if (! process.env.GITHUB_TOKEN) {
+          if (! process.env.GITHUB_TOKEN && missingPlugins.some(p => githubTarballUrl(p))) {
             console.warn("[WARN] GITHUB_TOKEN is not set — GitHub tarball plugin installs will be unauthenticated (60 req/hr rate limit).");
           }
 
@@ -218,6 +219,14 @@ const pluginSources = {
           // install() — skip pacote.manifest() which ignores .npmrc scoped
           // registries and resolves against registry.npmjs.org instead.
           packageName = plugin;
+        } else if (npmGitHubPattern.test(plugin)) {
+          packageName = resolveNamesFromLockfile([plugin])[plugin];
+          if (! packageName) {
+            throw new PluginInstallationError(`Plugin '${plugin}' could not be resolved from the local install (see FORK_CHANGES.md restart-loop runbook, step 3)`);
+          }
+          const cache = loadPluginNameCache();
+          cache[plugin] = packageName;
+          savePluginNameCache(cache);
         } else {
           packageName = (await pacote.manifest(plugin)).name;
           const cache = loadPluginNameCache();

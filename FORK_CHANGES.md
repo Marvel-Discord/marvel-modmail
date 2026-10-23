@@ -6,7 +6,7 @@ This repository is a fork of [Dragory/modmailbot](https://github.com/Dragory/mod
 |---|--------|-------|-------------|
 | 1 | OAuth2 log/attachment protection + confidential threads | `src/modules/webserver.js`, `src/modules/webserverPlugin.js` | `oauthClientSecret`, `confidentialAccessRoleIds`, `confidentialAccessUserIds` |
 | 2 | Suppress Discord embeds on posted links | `src/modules/close.js`, `src/main.js` | — |
-| 3 | Plugin install resilience (rate-limit retries + install skip) | `src/plugins.js` | `reinstallPlugins`; env `MM_PLUGIN_INSTALL_MAX_RETRIES`, `MM_PLUGIN_INSTALL_RETRY_BASE_DELAY_MS`, `MM_PLUGIN_INSTALL_RETRY_MAX_DELAY_MS`, `GITHUB_TOKEN` |
+| 3 | Plugin install machinery (offline name cache) | `src/plugins.js` | `reinstallPlugins`; env `MM_PLUGIN_INSTALL_MAX_RETRIES`, `MM_PLUGIN_INSTALL_RETRY_BASE_DELAY_MS`, `MM_PLUGIN_INSTALL_RETRY_MAX_DELAY_MS`, `GITHUB_TOKEN` |
 | 4 | Error resilience | `src/bot.js`, `src/index.js` | — |
 | 5 | SQLite connection pool | `src/knexConfig.js` | — |
 | 6 | Docker/infra | `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `packages/*` (pinned plugin gitlinks) | — |
@@ -46,7 +46,8 @@ persistent spec→name cache at `db/plugin-names.json` (rides the database volum
   api.github.com via the npmrc the Dockerfile CMD writes from `GITHUB_TOKEN` (5,000 req/hr token
   quota instead of 60 req/hr unauthenticated).
 - `load()` prefers the cache; `pacote.manifest()` remains only as a first-run fallback for
-  never-cached npm-registry specs.
+  never-cached npm-registry specs; GitHub specs that somehow reach load() uncached are resolved
+  offline from the lockfile or fail with a clear error (never an unauthenticated network call).
 - Install retries on HTTP 403 with exponential backoff (10s base, 120s cap; extra attempts =
   `MM_PLUGIN_INSTALL_MAX_RETRIES`, default 5, production sets 10). `reinstallPlugins` in
   config.ini forces a full reinstall. A startup warning fires when installs are needed but
@@ -63,6 +64,8 @@ makes zero GitHub requests.
 - Keep `GITHUB_TOKEN` set in the runtime environment (the Dockerfile CMD turns it into
   `/root/.npmrc`). Without it, installs still work but are unauthenticated and rate-limited.
 - `db/` must be a persistent volume, or the cache only survives restarts, not redeploys.
+- If `useGitForGitHubPlugins` is enabled, installs resolve via git and GitHub specs are not
+  cached — the zero-network invariant does not hold; this is not used in production.
 
 **Merge notes:** all logic lives in the `pluginSources.npm` body + helpers above it in
 `src/plugins.js`. Upstream changes elsewhere in the file merge cleanly.
