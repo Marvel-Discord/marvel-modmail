@@ -95,11 +95,17 @@ function npmSpecPackageName(spec) {
 
 // After installing GitHub specs as tarball URLs, recover each spec's package
 // name from the lockfile npm maintains inside node_modules. No network.
+// Matches the recorded "resolved" URL exactly first, then falls back to a
+// repo-level prefix match so the lookup still works if npm normalizes the
+// URL differently (e.g. appends the resolved commit to unpinned refs).
 function resolveNamesFromLockfile(specs) {
   const urlToSpec = new Map();
+  const repoPrefixToSpec = new Map();
   for (const spec of specs) {
     const url = githubTarballUrl(spec);
-    if (url) urlToSpec.set(url, spec);
+    if (! url) continue;
+    urlToSpec.set(url, spec);
+    repoPrefixToSpec.set(url.slice(0, url.lastIndexOf("/tarball")), spec);
   }
   if (urlToSpec.size === 0) return {};
 
@@ -112,8 +118,18 @@ function resolveNamesFromLockfile(specs) {
 
   const resolved = {};
   for (const [pkgPath, info] of Object.entries(lockfile.packages || {})) {
-    const spec = info.resolved && urlToSpec.get(info.resolved);
-    if (spec) resolved[spec] = pkgPath.replace(/^node_modules\//, "");
+    if (! info.resolved) continue;
+    const packageName = pkgPath.replace(/^node_modules\//, "");
+    const exactSpec = urlToSpec.get(info.resolved);
+    if (exactSpec) {
+      resolved[exactSpec] = packageName;
+      continue;
+    }
+    for (const [repoPrefix, spec] of repoPrefixToSpec) {
+      if (info.resolved.startsWith(repoPrefix + "/tarball") && ! resolved[spec]) {
+        resolved[spec] = packageName;
+      }
+    }
   }
   return resolved;
 }
@@ -156,6 +172,10 @@ const pluginSources = {
                 } catch (e) {}
               }
               console.log(`Plugin '${pluginName}' not installed, queuing for install.`);
+              const gitHubParts = pluginName.match(npmGitHubPattern);
+              if (gitHubParts && ! gitHubParts[3]) {
+                console.warn(`[WARN] GitHub plugin '${pluginName}' is not pinned to a commit — add #<sha> to the spec to avoid fetching unknown code on future installs.`);
+              }
               missingPlugins.push(pluginName);
             }
           }

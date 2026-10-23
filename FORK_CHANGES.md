@@ -60,7 +60,8 @@ makes zero GitHub requests.
 
 **Requirements for deployers:**
 - Pin GitHub plugin specs to exact commits: `plugins[] = npm:owner/repo#<full-sha>` — unpinned
-  specs install whatever is on the default branch at fetch time.
+  specs install whatever is on the default branch at fetch time (the bot logs a warning when
+  queueing an unpinned GitHub plugin).
 - Keep `GITHUB_TOKEN` set in the runtime environment (the Dockerfile CMD turns it into
   `/root/.npmrc`). Without it, installs still work but are unauthenticated and rate-limited.
 - `db/` must be a persistent volume, or the cache only survives restarts, not redeploys.
@@ -103,6 +104,9 @@ locally built encrypted image `marvel-modmail-enc` (config at
 `/home/nimrod/code/Marvel-Modmail/config.ini`, encrypted DB volume `db-encrypted`, env
 `GITHUB_TOKEN` / `MM_PLUGIN_INSTALL_MAX_RETRIES=10` / `DB_PASSPHRASE`). The stack's entrypoint
 must write the npmrc like the Dockerfile CMD does (the author's wrapper historically did).
+**Wrapper trap:** an image that declares its own `CMD` (e.g. `CMD ["npm", "start"]`) overrides
+the base image's npmrc-writing CMD — wrapper images must inherit the base CMD (declare no CMD
+of their own) or write `/root/.npmrc` themselves.
 
 **Do NOT bake plugins into the image by COPYing into `node_modules`** — the next
 `npm install` prunes directories that aren't in package-lock.json.
