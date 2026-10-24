@@ -38,27 +38,27 @@ function isRetryablePluginInstallError(err) {
   return /(?:^|\D)403(?:\D|$)|\bE403\b/i.test(combined);
 }
 
-function runNpmInstall(npmProcessName, pluginsToInstall) {
-  return new Promise((resolve, reject) => {
-    let stderr = "";
-    const npmProcess = childProcess.spawn(
-      npmProcessName,
-      ["install", "--verbose", "--no-save", ...pluginsToInstall],
-      { cwd: process.cwd(), shell: true }
-    );
+function runNpmInstallSync(npmProcessName, pluginsToInstall) {
+  // Synchronous npm install — this is a startup path, blocking is correct.
+  // The previous async spawn + Promise wrapper raced on Alpine's busybox sh
+  // (the `close` event fired before npm finished writing to disk).
+  const result = childProcess.spawnSync(
+    npmProcessName,
+    ["install", "--verbose", "--no-save", ...pluginsToInstall],
+    { cwd: process.cwd(), shell: true, encoding: "utf8", timeout: 300000 }
+  );
 
-    npmProcess.stdout.on("data", data => { /* consume to prevent pipe back-pressure */ });
-    npmProcess.stderr.on("data", data => { stderr += String(data) });
-    npmProcess.on("close", code => {
-      if (code !== 0) {
-        const err = new PluginInstallationError(stderr);
-        err.stderr = stderr;
-        err.code = code;
-        return reject(err);
-      }
-      return resolve();
-    });
-  });
+  if (result.error) {
+    const err = new PluginInstallationError(result.error.message);
+    err.stderr = result.stderr || "";
+    throw err;
+  }
+  if (result.status !== 0) {
+    const err = new PluginInstallationError(result.stderr || `npm exited with code ${result.status}`);
+    err.stderr = result.stderr || "";
+    err.code = result.status;
+    throw err;
+  }
 }
 
 const pluginNameCacheFile = path.join(config.dbDir, "plugin-names.json");
@@ -163,87 +163,81 @@ function prunePluginNameCache(currentSpecs) {
 
 const pluginSources = {
   npm: {
-    install(plugins) {
-      return new Promise(async (resolve, reject) => {
-        try {
-          console.log(`Checking ${plugins.length} npm plugin(s)...`);
+    async install(plugins) {
+      console.log(`Checking ${plugins.length} npm plugin(s)...`);
 
-          for (const pluginName of plugins) {
-            const gitHubParts = pluginName.match(npmGitHubPattern);
-            if (gitHubParts && ! gitHubParts[3]) {
-              console.warn(`[WARN] GitHub plugin '${pluginName}' is not pinned to a commit - future installs fetch whatever the default branch points at. If you pinned this with #<sha> in config.ini, wrap the value in double quotes: ini treats # as a comment and silently strips the pin.`);
-            }
-          }
+      for (const pluginName of plugins) {
+        const gitHubParts = pluginName.match(npmGitHubPattern);
+        if (gitHubParts && ! gitHubParts[3]) {
+          console.warn(`[WARN] GitHub plugin '${pluginName}' is not pinned to a commit - future installs fetch whatever the default branch points at. If you pinned this with #<sha> in config.ini, wrap the value in double quotes: ini treats # as a comment and silently strips the pin.`);
+        }
+      }
 
-          const nameCache = loadPluginNameCache();
-          const missingPlugins = [];
+      const nameCache = loadPluginNameCache();
+      const missingPlugins = [];
 
-          if (config.reinstallPlugins) {
-            console.log("reinstallPlugins is set, skipping installation cache...");
-            missingPlugins.push(...plugins);
-          } else {
-            for (const pluginName of plugins) {
-              const cachedName = nameCache[pluginName];
-              if (cachedName) {
-                try {
-                  require.resolve(cachedName);
-                  console.log(`Plugin '${pluginName}' already installed, skipping.`);
-                  continue;
-                } catch (e) {}
-              }
-              console.log(`Plugin '${pluginName}' not installed, queuing for install.`);
-              missingPlugins.push(pluginName);
-            }
-          }
-
-          if (missingPlugins.length === 0) {
-            console.log("All npm plugins already installed.");
-            prunePluginNameCache(plugins);
-            return resolve();
-          }
-
-          console.log(`Installing ${missingPlugins.length} npm plugin(s)...`);
-
-          if (! process.env.GITHUB_TOKEN && missingPlugins.some(p => githubTarballUrl(p))) {
-            console.warn("[WARN] GITHUB_TOKEN is not set — GitHub tarball plugin installs will be unauthenticated (60 req/hr rate limit).");
-          }
-
-          let finalPluginNames = missingPlugins;
-          if (! config.useGitForGitHubPlugins) {
-            finalPluginNames = missingPlugins.map(pluginName => githubTarballUrl(pluginName) || pluginName);
-          }
-
-          const npmProcessName = /^win/.test(process.platform) ? "npm.cmd" : "npm";
-          const totalAttempts = Math.max(1, PLUGIN_INSTALL_MAX_RETRIES + 1);
-
-          for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+      if (config.reinstallPlugins) {
+        console.log("reinstallPlugins is set, skipping installation cache...");
+        missingPlugins.push(...plugins);
+      } else {
+        for (const pluginName of plugins) {
+          const cachedName = nameCache[pluginName];
+          if (cachedName) {
             try {
-              if (attempt > 1) {
-                console.log(`Retrying npm plugin install (attempt ${attempt}/${totalAttempts})...`);
-              }
+              require.resolve(cachedName);
+              console.log(`Plugin '${pluginName}' already installed, skipping.`);
+              continue;
+            } catch (e) {}
+          }
+          console.log(`Plugin '${pluginName}' not installed, queuing for install.`);
+          missingPlugins.push(pluginName);
+        }
+      }
 
-          await runNpmInstall(npmProcessName, finalPluginNames);
+      if (missingPlugins.length === 0) {
+        console.log("All npm plugins already installed.");
+        prunePluginNameCache(plugins);
+        return;
+      }
+
+      console.log(`Installing ${missingPlugins.length} npm plugin(s)...`);
+
+      if (! process.env.GITHUB_TOKEN && missingPlugins.some(p => githubTarballUrl(p))) {
+        console.warn("[WARN] GITHUB_TOKEN is not set — GitHub tarball plugin installs will be unauthenticated (60 req/hr rate limit).");
+      }
+
+      let finalPluginNames = missingPlugins;
+      if (! config.useGitForGitHubPlugins) {
+        finalPluginNames = missingPlugins.map(pluginName => githubTarballUrl(pluginName) || pluginName);
+      }
+
+      const npmProcessName = /^win/.test(process.platform) ? "npm.cmd" : "npm";
+      const totalAttempts = Math.max(1, PLUGIN_INSTALL_MAX_RETRIES + 1);
+
+      for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+        try {
+          if (attempt > 1) {
+            console.log(`Retrying npm plugin install (attempt ${attempt}/${totalAttempts})...`);
+          }
+
+          runNpmInstallSync(npmProcessName, finalPluginNames);
           updatePluginNameCache(missingPlugins);
           prunePluginNameCache(plugins);
-          return resolve();
-            } catch (err) {
-              const shouldRetry = isRetryablePluginInstallError(err) && attempt < totalAttempts;
-              if (! shouldRetry) {
-                return reject(err);
-              }
-
-              const delay = Math.min(
-                PLUGIN_INSTALL_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
-                PLUGIN_INSTALL_RETRY_MAX_DELAY_MS
-              );
-              console.log(`Plugin install hit HTTP 403/rate limit. Retrying in ${Math.round(delay / 1000)}s...`);
-              await wait(delay);
-            }
-          }
+          return;
         } catch (err) {
-          return reject(err);
+          const shouldRetry = isRetryablePluginInstallError(err) && attempt < totalAttempts;
+          if (! shouldRetry) {
+            throw err;
+          }
+
+          const delay = Math.min(
+            PLUGIN_INSTALL_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
+            PLUGIN_INSTALL_RETRY_MAX_DELAY_MS
+          );
+          console.log(`Plugin install hit HTTP 403/rate limit. Retrying in ${Math.round(delay / 1000)}s...`);
+          await wait(delay);
         }
-      });
+      }
     },
 
     async load(plugin, pluginApi) {
