@@ -59,12 +59,15 @@ the 60 req/hr IP quota in minutes and the loop could never recover. With the cac
 makes zero GitHub requests.
 
 **Requirements for deployers:**
-- Pin GitHub plugin specs to exact commits: `plugins[] = npm:owner/repo#<full-sha>` — unpinned
-  specs install whatever is on the default branch at fetch time (the bot logs a warning when
-  queueing an unpinned GitHub plugin).
+- Pin GitHub plugin specs to exact commits — **double-quoted**, because the ini parser treats `#`
+  as an inline comment and silently strips the pin from unquoted values:
+  `plugins[] = "npm:owner/repo#<full-sha>"`. Unpinned specs install whatever the default branch
+  points at at fetch time; the bot warns on every boot for each unpinned GitHub spec.
 - Keep `GITHUB_TOKEN` set in the runtime environment (the Dockerfile CMD turns it into
   `/root/.npmrc`). Without it, installs still work but are unauthenticated and rate-limited.
 - `db/` must be a persistent volume, or the cache only survives restarts, not redeploys.
+- Cache entries for specs no longer present in the config are pruned automatically on
+  successful boots.
 - If `useGitForGitHubPlugins` is enabled, installs resolve via git and GitHub specs are not
   cached — the zero-network invariant does not hold; this is not used in production.
 
@@ -103,10 +106,13 @@ Production does NOT use docker-compose.yml — it runs the `marvel-modmail` Komo
 locally built encrypted image `marvel-modmail-enc` (config at
 `/home/nimrod/code/Marvel-Modmail/config.ini`, encrypted DB volume `db-encrypted`, env
 `GITHUB_TOKEN` / `MM_PLUGIN_INSTALL_MAX_RETRIES=10` / `DB_PASSPHRASE`). The stack's entrypoint
-must write the npmrc like the Dockerfile CMD does (the author's wrapper historically did).
-**Wrapper trap:** an image that declares its own `CMD` (e.g. `CMD ["npm", "start"]`) overrides
-the base image's npmrc-writing CMD — wrapper images must inherit the base CMD (declare no CMD
-of their own) or write `/root/.npmrc` themselves.
+must write the npmrc like the Dockerfile CMD does.
+**Wrapper trap (verified the hard way):** a wrapper image with its own `ENTRYPOINT` **cannot
+rely on inheriting the base CMD** — a wrapper that declares no CMD was observed building with
+`Cmd: []` under BuildKit. Wrapper images must write the npmrc themselves, e.g. by declaring
+the same CMD as the base image:
+
+    CMD ["sh", "-c", "if [ -n \"$GITHUB_TOKEN\" ]; then printf '//api.github.com/:_authToken=%s\n' \"$GITHUB_TOKEN\" > /root/.npmrc && chmod 600 /root/.npmrc; fi; exec npm start"]
 
 **Do NOT bake plugins into the image by COPYing into `node_modules`** — the next
 `npm install` prunes directories that aren't in package-lock.json.
@@ -135,13 +141,15 @@ npm run lint && node src/index.js (with local config)
 
 Rebuild the `marvel-modmail-enc` image from `master` on the host, then redeploy the Komodo stack `marvel-modmail`. The host config.ini must contain `oauthClientSecret` (and optionally `confidentialAccessRoleIds`, `confidentialAccessUserIds`). Verify the startup log shows `Starting Modmail v<version> (<sha>)` and `Loaded N plugins`. The Discord application must have `https://<config.url>/auth` registered as an OAuth2 redirect URI (Discord Developer Portal → the app → OAuth2 → Redirects); the production bot already has this registered.
 
-Plugin config must pin exact commits, e.g.:
+Plugin config must pin exact commits. **The values MUST be double-quoted** — the ini parser
+strips `#…` from unquoted values as an inline comment, silently turning a pinned spec into an
+unpinned one:
 
-    plugins[] = npm:MMPlugins/CloseAddons#7e9503da9f01e0fa61e5e3939846346a7e258240
-    plugins[] = npm:MMPlugins/LogSearch#cc0c94fe9834fb2f04c043c05e97edb0727e3732
-    plugins[] = npm:DarkView/MMEmergencyLink#b20ad5dd2248753211ee1647834f1a1908c886b3
-    plugins[] = npm:MMPlugins/Ping#a27582f6f18f1df6ed0503d135adbb674fa65129
-    plugins[] = npm:Marvel-Discord/modmailbot-formatter#1708280cdd3c3dd761bffd51124e22ddeebd4565
+    plugins[] = "npm:MMPlugins/CloseAddons#7e9503da9f01e0fa61e5e3939846346a7e258240"
+    plugins[] = "npm:MMPlugins/LogSearch#cc0c94fe9834fb2f04c043c05e97edb0727e3732"
+    plugins[] = "npm:DarkView/MMEmergencyLink#b20ad5dd2248753211ee1647834f1a1908c886b3"
+    plugins[] = "npm:MMPlugins/Ping#a27582f6f18f1df6ed0503d135adbb674fa65129"
+    plugins[] = "npm:Marvel-Discord/modmailbot-formatter#1708280cdd3c3dd761bffd51124e22ddeebd4565"
 
 After the first successful boot, `db/plugin-names.json` should list all five specs mapped to
 their package names (logsearch, modmailmsgclose, modmailping, emergencylink,

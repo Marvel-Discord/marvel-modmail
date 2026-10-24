@@ -148,12 +148,31 @@ function updatePluginNameCache(specs) {
   savePluginNameCache(cache);
 }
 
+// Drop cache entries for specs that are no longer in the config (e.g. pins
+// changed, or an ini-parsing mishap left stale unpinned keys behind).
+function prunePluginNameCache(currentSpecs) {
+  const cache = loadPluginNameCache();
+  const staleKeys = Object.keys(cache).filter(key => ! currentSpecs.includes(key));
+  if (staleKeys.length === 0) return;
+
+  for (const key of staleKeys) delete cache[key];
+  savePluginNameCache(cache);
+  console.log(`Pruned ${staleKeys.length} stale plugin name cache ${staleKeys.length === 1 ? "entry" : "entries"}.`);
+}
+
 const pluginSources = {
   npm: {
     install(plugins) {
       return new Promise(async (resolve, reject) => {
         try {
           console.log(`Checking ${plugins.length} npm plugin(s)...`);
+
+          for (const pluginName of plugins) {
+            const gitHubParts = pluginName.match(npmGitHubPattern);
+            if (gitHubParts && ! gitHubParts[3]) {
+              console.warn(`[WARN] GitHub plugin '${pluginName}' is not pinned to a commit - future installs fetch whatever the default branch points at. If you pinned this with #<sha> in config.ini, wrap the value in double quotes: ini treats # as a comment and silently strips the pin.`);
+            }
+          }
 
           const nameCache = loadPluginNameCache();
           const missingPlugins = [];
@@ -172,16 +191,13 @@ const pluginSources = {
                 } catch (e) {}
               }
               console.log(`Plugin '${pluginName}' not installed, queuing for install.`);
-              const gitHubParts = pluginName.match(npmGitHubPattern);
-              if (gitHubParts && ! gitHubParts[3]) {
-                console.warn(`[WARN] GitHub plugin '${pluginName}' is not pinned to a commit — add #<sha> to the spec to avoid fetching unknown code on future installs.`);
-              }
               missingPlugins.push(pluginName);
             }
           }
 
           if (missingPlugins.length === 0) {
             console.log("All npm plugins already installed.");
+            prunePluginNameCache(plugins);
             return resolve();
           }
 
@@ -205,9 +221,10 @@ const pluginSources = {
                 console.log(`Retrying npm plugin install (attempt ${attempt}/${totalAttempts})...`);
               }
 
-              await runNpmInstall(npmProcessName, finalPluginNames);
-              updatePluginNameCache(missingPlugins);
-              return resolve();
+          await runNpmInstall(npmProcessName, finalPluginNames);
+          updatePluginNameCache(missingPlugins);
+          prunePluginNameCache(plugins);
+          return resolve();
             } catch (err) {
               const shouldRetry = isRetryablePluginInstallError(err) && attempt < totalAttempts;
               if (! shouldRetry) {
