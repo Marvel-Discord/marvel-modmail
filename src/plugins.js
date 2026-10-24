@@ -47,6 +47,7 @@ function runNpmInstall(npmProcessName, pluginsToInstall) {
       { cwd: process.cwd(), shell: true }
     );
 
+    npmProcess.stdout.on("data", data => { /* consume to prevent pipe back-pressure */ });
     npmProcess.stderr.on("data", data => { stderr += String(data) });
     npmProcess.on("close", code => {
       if (code !== 0) {
@@ -271,7 +272,22 @@ const pluginSources = {
           savePluginNameCache(cache);
         }
       }
-      const pluginFn = require(packageName);
+      let pluginFn;
+      try {
+        pluginFn = require(packageName);
+      } catch (err) {
+        if (err.code === "MODULE_NOT_FOUND") {
+          // Defense in depth: the install step completed but the package
+          // still isn't on disk (e.g. first boot after container recreate
+          // where npm and the plugin loader race). Retry the install once,
+          // then retry the require.
+          console.warn(`Plugin '${packageName}' not found on disk, retrying install...`);
+          await pluginSources.npm.install([plugin]);
+          pluginFn = require(packageName);
+        } else {
+          throw err;
+        }
+      }
       if (typeof pluginFn !== "function") {
         throw new PluginInstallationError(`Plugin '${plugin}' is not a valid plugin`);
       }
