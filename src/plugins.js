@@ -161,6 +161,22 @@ function prunePluginNameCache(currentSpecs) {
   console.log(`Pruned ${staleKeys.length} stale plugin name cache ${staleKeys.length === 1 ? "entry" : "entries"}.`);
 }
 
+// Filesystem-based installed check — avoids Node's CJS negative resolution
+// cache, which poisons all subsequent require(pkg) calls if the probe fails
+// before the package is installed (the first-boot crash root cause).
+function pluginDirExists(packageName) {
+  const parts = packageName.split("/");
+  return fs.existsSync(path.join(process.cwd(), "node_modules", ...parts));
+}
+
+// Absolute-path require — bypasses Node's module resolution cache entirely
+// (a failed bare-specifier require in the same process would otherwise
+// return MODULE_NOT_FOUND even after the package is on disk).
+function requirePlugin(packageName) {
+  const parts = packageName.split("/");
+  return require(path.join(process.cwd(), "node_modules", ...parts));
+}
+
 const pluginSources = {
   npm: {
     async install(plugins) {
@@ -182,12 +198,9 @@ const pluginSources = {
       } else {
         for (const pluginName of plugins) {
           const cachedName = nameCache[pluginName];
-          if (cachedName) {
-            try {
-              require.resolve(cachedName);
-              console.log(`Plugin '${pluginName}' already installed, skipping.`);
-              continue;
-            } catch (e) {}
+          if (cachedName && pluginDirExists(cachedName)) {
+            console.log(`Plugin '${pluginName}' already installed, skipping.`);
+            continue;
           }
           console.log(`Plugin '${pluginName}' not installed, queuing for install.`);
           missingPlugins.push(pluginName);
@@ -268,7 +281,7 @@ const pluginSources = {
       }
       let pluginFn;
       try {
-        pluginFn = require(packageName);
+        pluginFn = requirePlugin(packageName);
       } catch (err) {
         if (err.code === "MODULE_NOT_FOUND") {
           // Defense in depth: the install step completed but the package
@@ -277,7 +290,7 @@ const pluginSources = {
           // then retry the require.
           console.warn(`Plugin '${packageName}' not found on disk, retrying install...`);
           await pluginSources.npm.install([plugin]);
-          pluginFn = require(packageName);
+          pluginFn = requirePlugin(packageName);
         } else {
           throw err;
         }
